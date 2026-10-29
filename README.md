@@ -1,6 +1,6 @@
 # Sim Mode
 
-One hotkey to flip a multi-monitor Windows PC between a **sim-racing monitor on its own** and the **normal desk monitors**. In Sim mode the other screens are turned off, so the taskbar, every new window and every notification lands on the sim monitor.
+One hotkey to flip a multi-monitor Windows PC between the **sim-racing monitor(s) on their own** and the **normal desk monitors**. In Sim mode the other screens are turned off, so the taskbar, every new window and every notification lands on the sim monitors.
 
 <p>
   <img src="images/desk-mode.png" alt="Desk mode" height="480">
@@ -17,11 +17,11 @@ One hotkey to flip a multi-monitor Windows PC between a **sim-racing monitor on 
 
 | Mode | Monitors on |
 |---|---|
-| Sim mode | only the sim monitor |
-| Desk mode | the desk monitors (default: every monitor except the sim monitor) |
+| Sim mode | only the sim monitors (one, or several for a triple-screen rig) |
+| Desk mode | the desk monitors (default: every monitor except the sim monitors) |
 | All monitors | everything, in the layout Windows saved |
 
-In the panel, pick the sim monitor and the desk monitors by clicking their chips. Tray icon colour: **red** = Sim mode, **blue** = Desk mode, **grey** = anything else, **amber** = switching.
+In the panel, pick the sim monitors and the desk monitors by clicking their chips (at least one of each). With three or more sim monitors the middle one becomes the primary display in Sim mode, unless the current primary is already one of them. A sim monitor that is unplugged is skipped. Tray icon colour: **red** = Sim mode, **blue** = Desk mode, **grey** = anything else, **amber** = switching.
 
 ## How it works
 
@@ -41,4 +41,4 @@ build.bat
 
 Exit the running app (tray menu → Exit) before rebuilding, since the exe is locked while it runs.
 
-The default sim monitor name is `34E6UC` (`DefaultSimMonitor` in `SimMode.cs`); choose yours in the panel instead of editing it.
+The default sim monitor name is `34E6UC` (`DefaultSimMonitor` in `SimMode.cs`); choose yours in the panel instead of editing it. Settings from older versions (`SimMonitor`) are picked up automatically.

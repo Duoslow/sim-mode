@@ -1,4 +1,4 @@
-// Sim Mode tray app: one hotkey flips between the sim-racing monitor alone and the desk monitors.
+// Sim Mode tray app: one hotkey flips between the sim-racing monitors alone and the desk monitors.
 // Build: build.bat (uses the .NET Framework csc that ships with Windows)
 using System;
 using System.Collections.Generic;
@@ -58,15 +58,17 @@ class TrayApp : ApplicationContext
     readonly Dictionary<string, int> layoutX = new Dictionary<string, int>();   // left-to-right order of the monitors
 
     ToolStripMenuItem miSim, miDesk, miAll;
-    string simMonitor;
-    List<string> deskMonitors;   // empty = every connected monitor except the sim monitor
+    List<string> simMonitors;    // at least one
+    List<string> deskMonitors;   // empty = every connected monitor except the sim monitors
     bool busy;
 
     public TrayApp(bool atStartup)
     {
-        simMonitor = LoadSetting("SimMonitor", DefaultSimMonitor);
-        deskMonitors = new List<string>(LoadSetting("DeskMonitors", "").Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries));
-        foreach (var item in LoadSetting("Layout", "").Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries))
+        // "SimMonitor" held the single sim monitor of older versions.
+        simMonitors = SplitList(LoadSetting("SimMonitors", LoadSetting("SimMonitor", DefaultSimMonitor)));
+        if (simMonitors.Count == 0) simMonitors.Add(DefaultSimMonitor);
+        deskMonitors = SplitList(LoadSetting("DeskMonitors", ""));
+        foreach (var item in SplitList(LoadSetting("Layout", "")))
         {
             int eq = item.LastIndexOf('='), x;
             if (eq > 0 && int.TryParse(item.Substring(eq + 1), out x)) layoutX[item.Substring(0, eq)] = x;
@@ -112,7 +114,8 @@ class TrayApp : ApplicationContext
 
     public bool Busy { get { return busy; } }
     public bool HotkeyOk { get { return messages.HotkeyRegistered; } }
-    public string SimMonitor { get { return simMonitor; } }
+    public List<string> SimMonitors { get { return new List<string>(simMonitors); } }
+    public bool IsSim(string name) { return simMonitors.Exists(s => Displays.Matches(name, s)); }
 
     void BuildMenu()
     {
@@ -138,25 +141,33 @@ class TrayApp : ApplicationContext
     public Mode CurrentMode()
     {
         var active = Displays.Active();
-        if (active.Length == 1 && Displays.Matches(active[0], simMonitor)) return Mode.Sim;
+        if (Displays.SameSet(active, SimSet())) return Mode.Sim;
         if (Displays.SameSet(active, DeskSet())) return Mode.Desk;
         if (active.Length == Displays.Connected().Length) return Mode.All;
         return Mode.Other;
+    }
+
+    // The sim monitors that are plugged in; a missing one does not block Sim mode on the others.
+    public List<string> SimSet()
+    {
+        var connected = Displays.Connected();
+        return simMonitors.FindAll(s => Array.Exists(connected, n => Displays.Matches(n, s)));
     }
 
     public List<string> DeskSet()
     {
         if (deskMonitors.Count > 0) return new List<string>(deskMonitors);
         var set = new List<string>();
-        foreach (var n in Displays.Connected()) if (!Displays.Matches(n, simMonitor)) set.Add(n);
+        foreach (var n in Displays.Connected()) if (!IsSim(n)) set.Add(n);
         return set;
     }
 
-    public void SetSimMonitor(string name)
+    public void SetSimMonitors(List<string> list)
     {
-        simMonitor = name;
-        SaveSetting("SimMonitor", name);
-        deskMonitors.RemoveAll(n => Displays.Matches(n, name));
+        if (list.Count == 0) return;
+        simMonitors = new List<string>(list);
+        SaveSetting("SimMonitors", string.Join("|", simMonitors.ToArray()));
+        deskMonitors.RemoveAll(IsSim);
         SaveSetting("DeskMonitors", string.Join("|", deskMonitors.ToArray()));
         UpdateUi();
     }
@@ -165,7 +176,7 @@ class TrayApp : ApplicationContext
     {
         // Store "all except the sim monitor" as the default, so new monitors are included automatically.
         var all = new List<string>();
-        foreach (var n in Displays.Connected()) if (!Displays.Matches(n, simMonitor)) all.Add(n);
+        foreach (var n in Displays.Connected()) if (!IsSim(n)) all.Add(n);
         bool isDefault = list.Count == all.Count && all.TrueForAll(list.Contains);
         deskMonitors = isDefault ? new List<string>() : list;
         SaveSetting("DeskMonitors", string.Join("|", deskMonitors.ToArray()));
@@ -235,21 +246,34 @@ class TrayApp : ApplicationContext
         else GoSim();
     }
 
-    public void GoSim() { Run(EnterSim); }
+    public void GoSim()
+    {
+        // Ordered here, on the UI thread: the middle sim monitor (left to right) goes first, so a
+        // triple-screen rig gets its centre screen as primary when the desk primary turns off.
+        var sims = new List<string>();
+        foreach (var m in MonitorsInOrder())
+            if (IsSim(m.Name) && !sims.Contains(m.Name)) sims.Add(m.Name);
+        if (sims.Count > 2)
+        {
+            string centre = sims[(sims.Count - 1) / 2];
+            sims.Remove(centre);
+            sims.Insert(0, centre);
+        }
+        Run(() => EnterSim(sims));
+    }
     public void GoDesk() { Run(EnterDesk); }
     public void GoAll() { Run(() => { Displays.Extend(); return null; }); }
 
-    string EnterSim()
+    string EnterSim(List<string> sims)
     {
-        string sim = simMonitor;
-        if (!Displays.IsActive(sim))
+        if (sims.Count == 0)
+            return simMonitors.Count == 1 ? "Sim monitor '" + simMonitors[0] + "' is not connected." : "None of the sim monitors is connected.";
+        if (!sims.TrueForAll(Displays.IsActive))
         {
-            if (!Array.Exists(Displays.Connected(), n => Displays.Matches(n, sim)))
-                return "Sim monitor '" + sim + "' is not connected.";
             Displays.Extend();
-            for (int i = 0; i < 10 && !Displays.IsActive(sim); i++) Thread.Sleep(500);
+            for (int i = 0; i < 10 && !sims.TrueForAll(Displays.IsActive); i++) Thread.Sleep(500);
         }
-        return Displays.Keep(new List<string> { sim });
+        return Displays.Keep(sims);
     }
 
     string EnterDesk()
@@ -298,6 +322,11 @@ class TrayApp : ApplicationContext
     public static string ModeName(Mode mode)
     {
         return mode == Mode.Sim ? "Sim mode" : mode == Mode.Desk ? "Desk mode" : mode == Mode.All ? "All monitors" : "Custom layout";
+    }
+
+    static List<string> SplitList(string value)
+    {
+        return new List<string>(value.Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries));
     }
 
     static string LoadSetting(string name, string fallback)
@@ -477,20 +506,21 @@ class Chip : SmoothControl
         g.Clear(BackColor);
         Ui.Smooth(g);
         var r = new RectangleF(0.5f, 0.5f, Width - 2, Height - 2);
-        Color fill = selected ? Ui.Mix(Accent, BackColor, 0.72f) : Hover ? Ui.CardHover : Ui.Card;
-        Color border = selected ? Accent : Ui.Line;
+        bool on = selected && Enabled;
+        Color fill = !Enabled ? BackColor : on ? Ui.Mix(Accent, BackColor, 0.72f) : Hover ? Ui.CardHover : Ui.Card;
+        Color border = on ? Accent : Ui.Line;
         using (var path = Ui.Round(r, Height / 2f))
         using (var b = new SolidBrush(fill))
-        using (var p = new Pen(border, selected ? 1.5f : 1f))
+        using (var p = new Pen(border, on ? 1.5f : 1f) { DashStyle = Enabled ? DashStyle.Solid : DashStyle.Dash })
         {
             g.FillPath(b, path);
             g.DrawPath(p, path);
         }
         int dotX = Ui.S(12), dotY = Height / 2;
-        using (var b = new SolidBrush(selected ? Accent : Ui.Line))
+        using (var b = new SolidBrush(on ? Accent : Ui.Line))
             g.FillEllipse(b, dotX - Ui.S(4), dotY - Ui.S(4), Ui.S(8), Ui.S(8));
-        TextRenderer.DrawText(g, Text, Font, new Rectangle(Ui.S(22), 0, Width - Ui.S(26), Height), selected ? Ui.Fg : Ui.Dim,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(Ui.S(22), 0, Width - Ui.S(26), Height),
+            on ? Ui.Fg : Enabled ? Ui.Dim : Ui.Mix(Ui.Dim, BackColor, 0.45f), TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
     }
 }
 
@@ -534,16 +564,16 @@ class ToggleRow : SmoothControl
 class MonitorPreview : SmoothControl
 {
     List<Displays.MonitorInfo> mons = new List<Displays.MonitorInfo>();
-    string sim = "";
+    Predicate<string> isSim = n => false;
     Mode mode;
     bool busy;
 
     public MonitorPreview() { Cursor = Cursors.Default; }
 
-    public void SetData(List<Displays.MonitorInfo> monitors, string simMonitor, Mode current, bool isBusy)
+    public void SetData(List<Displays.MonitorInfo> monitors, Predicate<string> simTest, Mode current, bool isBusy)
     {
         mons = monitors;
-        sim = simMonitor;
+        isSim = simTest;
         mode = current;
         busy = isBusy;
         Invalidate();
@@ -575,8 +605,8 @@ class MonitorPreview : SmoothControl
             {
                 float w = Math.Max(m.Width, 1) * scale, h = Math.Max(m.Height, 1) * scale;
                 var r = new RectangleF(x, baseline - h, w, h);
-                bool isSim = Displays.Matches(m.Name, sim);
-                Color accent = busy ? Ui.Busy : isSim ? Ui.Sim : Ui.Desk;
+                bool sim = isSim(m.Name);
+                Color accent = busy ? Ui.Busy : sim ? Ui.Sim : Ui.Desk;
                 using (var path = Ui.Round(r, Ui.S(4)))
                 {
                     if (m.Active)
@@ -595,7 +625,7 @@ class MonitorPreview : SmoothControl
                 using (var b = new SolidBrush(m.Active ? Ui.Mix(accent, Ui.Card, 0.45f) : Ui.Line))
                     g.FillRectangle(b, r.X + w / 2 - Ui.S(1.5f), r.Bottom + 1, Ui.S(3), Ui.S(5));
 
-                string tag = isSim ? "SIM" : m.Active ? "ON" : "OFF";
+                string tag = sim ? "SIM" : m.Active ? "ON" : "OFF";
                 var tagRect = Rectangle.Round(r);
                 TextRenderer.DrawText(g, tag, small, tagRect, m.Active ? Color.White : Ui.Dim, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
@@ -665,7 +695,7 @@ class PanelForm : Form
 {
     const int W = 360;
     readonly TrayApp app;
-    readonly Label lblTitle, lblStatus, lblSimHeader, lblDeskHeader, lblDeskHint;
+    readonly Label lblTitle, lblStatus, lblSimHeader, lblSimHint, lblDeskHeader, lblDeskHint;
     readonly Panel statusDot;
     readonly SmoothControl close;
     readonly MonitorPreview preview;
@@ -716,7 +746,8 @@ class PanelForm : Form
         btnAll = new RoundButton { Text = "All monitors", Font = Ui.Text(9.5f), Location = new Point(Ui.S(28 + (W - 46) / 2), Ui.S(304)), Size = new Size(Ui.S((W - 46) / 2), Ui.S(36)), BackColor = Ui.Bg };
         btnAll.Click += (s, e) => app.GoAll();
 
-        lblSimHeader = SectionLabel("SIM MONITOR");
+        lblSimHeader = SectionLabel("SIM MONITORS");
+        lblSimHint = new Label { Text = "on in Sim mode", AutoSize = true, Font = Ui.Text(8f), ForeColor = Ui.Dim, BackColor = Ui.Bg };
         lblDeskHeader = SectionLabel("DESK MONITORS");
         lblDeskHint = new Label { Text = "on in Desk mode", AutoSize = true, Font = Ui.Text(8f), ForeColor = Ui.Dim, BackColor = Ui.Bg };
         chipsTop = Ui.S(360);
@@ -728,7 +759,7 @@ class PanelForm : Form
         keys = new KeyHint { Font = Ui.Text(8.5f), Size = new Size(Ui.S(W - 36), Ui.S(30)), BackColor = Ui.Bg };
 
         Controls.AddRange(new Control[] { lblTitle, close, statusDot, lblStatus, preview, btnMain, btnDesk, btnAll,
-            lblSimHeader, lblDeskHeader, lblDeskHint, rowDeskAtStartup, rowStartup, keys });
+            lblSimHeader, lblSimHint, lblDeskHeader, lblDeskHint, rowDeskAtStartup, rowStartup, keys });
 
         Deactivate += (s, e) => HidePanel();
         FormClosing += (s, e) => { if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; HidePanel(); } };
@@ -777,7 +808,7 @@ class PanelForm : Form
         return mode == Mode.Sim ? Ui.Sim : mode == Mode.Desk ? Ui.Desk : Ui.Other;
     }
 
-    // Monitor chips: rebuilt when the panel opens or the sim monitor changes.
+    // Monitor chips: rebuilt when the panel opens or the sim monitors change.
     void Rebuild()
     {
         updating = true;
@@ -788,17 +819,27 @@ class PanelForm : Form
         deskChips.Clear();
 
         var connected = new List<string>(Displays.Connected());
-        if (!connected.Exists(n => Displays.Matches(n, app.SimMonitor))) connected.Add(app.SimMonitor);
+        foreach (var sim in app.SimMonitors)
+            if (!connected.Exists(n => Displays.Matches(n, sim))) connected.Add(sim);   // remembered but unplugged
         var desk = app.DeskSet();
 
         int y = chipsTop;
         lblSimHeader.Location = new Point(Ui.S(18), y);
+        lblSimHint.Location = new Point(lblSimHeader.Right + Ui.S(6), y + Ui.S(1));
         y += Ui.S(22);
         foreach (var n in connected)
         {
-            var chip = new Chip(n, chipFont) { Accent = Ui.Sim, BackColor = Ui.Bg, Selected = Displays.Matches(n, app.SimMonitor) };
-            string name = n;
-            chip.Click += (s, e) => { if (!Displays.Matches(name, app.SimMonitor)) { app.SetSimMonitor(name); Rebuild(); } };
+            var chip = new Chip(n, chipFont) { Accent = Ui.Sim, BackColor = Ui.Bg, Selected = app.IsSim(n) };
+            chip.Click += (s, e) =>
+            {
+                var c = (Chip)s;
+                if (c.Selected && simChips.FindAll(x => x.Selected).Count == 1) return;   // keep at least one sim monitor
+                c.Selected = !c.Selected;
+                var list = new List<string>();
+                foreach (var x in simChips) if (x.Selected) list.Add(x.Text);
+                app.SetSimMonitors(list);
+                BeginInvoke((Action)Rebuild);   // the desk chips change; not disposed from inside this chip's click
+            };
             simChips.Add(chip);
         }
         y = FlowChips(simChips, y) + Ui.S(16);
@@ -808,8 +849,10 @@ class PanelForm : Form
         y += Ui.S(22);
         foreach (var n in connected)
         {
-            if (Displays.Matches(n, app.SimMonitor)) continue;
-            var chip = new Chip(n, chipFont) { Accent = Ui.Desk, BackColor = Ui.Bg, Selected = desk.Contains(n) };
+            // Sim monitors stay in the list, greyed out, so picking them does not reflow the panel.
+            bool isSim = app.IsSim(n);
+            var chip = new Chip(n, chipFont) { Accent = Ui.Desk, BackColor = Ui.Bg, Selected = !isSim && desk.Contains(n), Enabled = !isSim };
+            if (isSim) chip.Cursor = Cursors.Default;
             chip.Click += (s, e) =>
             {
                 var c = (Chip)s;
@@ -830,6 +873,7 @@ class PanelForm : Form
         ClientSize = new Size(Ui.S(W), y);
         ResumeLayout();
         updating = false;
+        Reposition();   // keep the bottom edge above the tray if a monitor was plugged in or out
         Invalidate();
     }
 
@@ -855,11 +899,11 @@ class PanelForm : Form
         lblStatus.Text = busy ? "Switching..." : TrayApp.ModeName(mode);
         lblStatus.ForeColor = busy ? Ui.Busy : mode == Mode.Other ? Ui.Dim : Ui.Fg;
         statusDot.Invalidate();
-        preview.SetData(monitors, app.SimMonitor, mode, busy);
+        preview.SetData(monitors, app.IsSim, mode, busy);
 
         bool sim = mode == Mode.Sim;
         btnMain.Text = busy ? "Switching..." : sim ? "Back to Desk" : "Start Sim mode";
-        btnMain.Caption2 = busy ? null : sim ? "turn the desk monitors back on" : "only " + app.SimMonitor + " stays on";
+        btnMain.Caption2 = busy ? null : sim ? "turn the desk monitors back on" : SimCaption(app.SimMonitors);
         btnMain.SetFill(busy ? Ui.Busy : sim ? Ui.Desk : Ui.Sim);
         btnMain.Invalidate();
         btnMain.Enabled = !busy;
@@ -871,6 +915,13 @@ class PanelForm : Form
         keys.Unavailable = !app.HotkeyOk;
         keys.Invalidate();
         updating = false;
+    }
+
+    static string SimCaption(List<string> sims)
+    {
+        if (sims.Count == 1) return "only " + sims[0] + " stays on";
+        if (sims.Count == 2) return "only " + sims[0] + " and " + sims[1] + " stay on";
+        return "only the " + sims.Count + " sim monitors stay on";
     }
 
     public void Toggle()
